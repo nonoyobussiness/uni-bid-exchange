@@ -32,4 +32,4 @@ dist-ssr
 *.sw?
 package-lock.json
 
-backend/.env
+.env
