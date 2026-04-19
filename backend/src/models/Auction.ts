@@ -17,6 +17,11 @@ const auctionSchema = new Schema(
       required: true,
       trim: true,
     },
+    images: {
+      type: [String],
+      required: true,
+      default: [],
+    },
     startingPrice: {
       type: Number,
       required: true,

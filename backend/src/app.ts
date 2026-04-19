@@ -3,6 +3,11 @@ import express, { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 
 import authRoutes from "./routes/auth";
+import auctionsRoutes from "./routes/auctions";
+import bidsRoutes from "./routes/bids";
+import usersRoutes from "./routes/users";
+import walletRoutes from "./routes/wallet";
+import { AppError } from "./utils/errors";
 
 const app = express();
 
@@ -17,6 +22,10 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/auctions", auctionsRoutes);
+app.use("/api/bids", bidsRoutes);
+app.use("/api/users", usersRoutes);
+app.use("/api/wallet", walletRoutes);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
@@ -31,6 +40,15 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
       success: false,
       message: "Validation failed",
       errors: error.flatten(),
+    });
+    return;
+  }
+
+  if (error instanceof AppError) {
+    res.status(error.statusCode).json({
+      success: false,
+      message: error.message,
+      ...(error.details ? { details: error.details } : {}),
     });
     return;
   }

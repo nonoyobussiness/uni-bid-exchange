@@ -43,6 +43,33 @@ const userSchema = new Schema(
       required: false,
       trim: true,
     },
+    preferences: {
+      emailNotifications: {
+        type: Boolean,
+        required: true,
+        default: true,
+      },
+      bidUpdates: {
+        type: Boolean,
+        required: true,
+        default: true,
+      },
+      outbidAlerts: {
+        type: Boolean,
+        required: true,
+        default: true,
+      },
+      auctionReminders: {
+        type: Boolean,
+        required: true,
+        default: true,
+      },
+      marketingEmails: {
+        type: Boolean,
+        required: true,
+        default: false,
+      },
+    },
     createdAt: {
       type: Date,
       required: true,

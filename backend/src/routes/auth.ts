@@ -66,7 +66,8 @@ router.post("/register", async (req: Request, res: Response): Promise<void> => {
   try {
     const payload = registerSchema.parse(req.body);
 
-    const existingUser = await UserModel.findOne({ email: payload.email });
+    const normalizedEmail = payload.email.toLowerCase();
+    const existingUser = await UserModel.findOne({ email: normalizedEmail });
     if (existingUser) {
       res.status(409).json({
         success: false,
@@ -80,7 +81,7 @@ router.post("/register", async (req: Request, res: Response): Promise<void> => {
     const user = await UserModel.create({
       fullName: payload.fullName,
       studentId: payload.studentId,
-      email: payload.email,
+      email: normalizedEmail,
       passwordHash,
       university: payload.university,
       avatarUrl: payload.avatarUrl,
@@ -142,21 +143,16 @@ router.post("/login", async (req: Request, res: Response): Promise<void> => {
   try {
     const payload = loginSchema.parse(req.body);
 
-    const user = await UserModel.findOne({ email: payload.email });
+    const normalizedLoginEmail = payload.email.toLowerCase();
+    const user = await UserModel.findOne({ email: normalizedLoginEmail });
     if (!user) {
-      res.status(401).json({
-        success: false,
-        message: "Invalid email or password",
-      });
+      res.status(401).json({ success: false, message: "Invalid email or password" });
       return;
     }
 
     const passwordMatches = await bcrypt.compare(payload.password, user.passwordHash);
     if (!passwordMatches) {
-      res.status(401).json({
-        success: false,
-        message: "Invalid email or password",
-      });
+      res.status(401).json({ success: false, message: "Invalid email or password" });
       return;
     }
 
