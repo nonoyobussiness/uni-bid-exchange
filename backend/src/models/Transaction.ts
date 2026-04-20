@@ -9,7 +9,7 @@ const transactionSchema = new Schema(
     },
     type: {
       type: String,
-      enum: ["credit", "debit", "hold", "release"],
+      enum: ["credit", "debit", "hold", "release", "purchase", "sale"],
       required: true,
     },
     amount: {

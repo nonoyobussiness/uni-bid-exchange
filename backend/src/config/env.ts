@@ -6,6 +6,7 @@ dotenv.config();
 const envSchema = z.object({
   MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
   JWT_SECRET: z.string().min(1, "JWT_SECRET is required"),
+  REDIS_URL: z.string().optional(),
   PORT: z
     .string()
     .optional()

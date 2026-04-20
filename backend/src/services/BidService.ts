@@ -7,12 +7,20 @@ import { BidModel } from "../models/Bid";
 import { TransactionModel } from "../models/Transaction";
 import { WalletModel } from "../models/Wallet";
 import { AppError } from "../utils/errors";
-import { acquireLock, releaseLock } from "../utils/redis";
+import { acquireLock, checkBidRateLimit, releaseLock } from "../utils/redis";
 
 type PlaceBidInput = {
   auctionId: string;
   bidderId: string;
   amount: number;
+};
+
+export type PlaceBidResult = {
+  auction: Record<string, unknown>;
+  previousHighestBidderId: string | null;
+  bidderId: string;
+  amount: number;
+  auctionId: string;
 };
 
 type BidTransactionRecord = {
@@ -59,7 +67,7 @@ const createBidTransactionRecord = (
 });
 
 export class BidService {
-  static async placeBid(input: PlaceBidInput) {
+  static async placeBid(input: PlaceBidInput): Promise<PlaceBidResult> {
     if (!Types.ObjectId.isValid(input.auctionId)) {
       throw new AppError(400, "Invalid auction id");
     }
@@ -73,11 +81,22 @@ export class BidService {
 
     validateAuctionForBid(initialAuction, input.amount, input.bidderId);
 
+    const withinLimit = await checkBidRateLimit(input.bidderId, input.auctionId);
+    if (!withinLimit) {
+      console.log(
+        `[Bid:REJECT] Rate limit exceeded: user=${input.bidderId}, auction=${input.auctionId}`,
+      );
+      throw new AppError(429, "Too many bids. Please wait a few seconds before trying again.");
+    }
+
     const lockKey = `auction:lock:${input.auctionId}`;
     const lockValue = crypto.randomUUID();
     const lockAcquired = await acquireLock(lockKey, lockValue, 5);
 
     if (!lockAcquired) {
+      console.log(
+        `[Bid:REJECT] Lock contention: user=${input.bidderId}, auction=${input.auctionId}`,
+      );
       throw new AppError(409, "Another bid is currently being processed. Please retry.");
     }
 
@@ -100,7 +119,7 @@ export class BidService {
         .sort({ createdAt: -1 })
         .session(session);
 
-      const previousHighestBidderId = currentLeadingBid?.userId.toString();
+      const previousHighestBidderId = currentLeadingBid?.userId.toString() ?? null;
       const previousHighestAmount = currentLeadingBid ? auction.currentBid : 0;
       let releasedAmount = 0;
 
@@ -194,7 +213,14 @@ export class BidService {
         .populate("sellerId", "fullName university trustScore avatarUrl bio createdAt")
         .lean();
 
-      return updatedAuction;
+      return {
+        auction: updatedAuction as Record<string, unknown>,
+        previousHighestBidderId:
+          previousHighestBidderId !== input.bidderId ? previousHighestBidderId : null,
+        bidderId: input.bidderId,
+        amount: input.amount,
+        auctionId: input.auctionId,
+      };
     } catch (error) {
       await session.abortTransaction();
       throw error;

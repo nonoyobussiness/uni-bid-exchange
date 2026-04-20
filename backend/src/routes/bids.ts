@@ -14,7 +14,7 @@ const createBidSchema = z.object({
 router.post("/", authGuard, async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const payload = createBidSchema.parse(req.body);
-    const data = await BidService.placeBid({
+    const result = await BidService.placeBid({
       auctionId: payload.auctionId,
       amount: payload.amount,
       bidderId: req.user!._id.toString(),
@@ -23,7 +23,7 @@ router.post("/", authGuard, async (req: Request, res: Response, next: NextFuncti
     res.status(201).json({
       success: true,
       message: "Bid placed successfully",
-      data,
+      data: result.auction,
     });
   } catch (error) {
     next(error);

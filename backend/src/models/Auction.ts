@@ -45,9 +45,14 @@ const auctionSchema = new Schema(
     },
     status: {
       type: String,
-      enum: ["active", "sold", "expired"],
+      enum: ["active", "processing", "sold", "expired"],
       required: true,
       default: "active",
+    },
+    winnerId: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
     },
     endsAt: {
       type: Date,
