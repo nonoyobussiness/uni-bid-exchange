@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Star, LogOut, Loader2, Pencil, Trophy, Gavel, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -17,11 +17,12 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { useAuth } from "@/lib/auth-context";
-import { useStore } from "@/lib/hooks";
-import { changePassword, getBids, getWallet, listMyListings, listReviewsFor, updateProfile } from "@/lib/api";
+import { changePassword, getMyBids, getMyListings, getUserProfile, getWallet, updateProfile, deleteAuction, cancelAuction } from "@/lib/api";
+import { AuctionActionModal } from "@/components/auction-action-modal";
 import { UnicoinAmount } from "@/components/unicoin";
 import { AuctionCard } from "@/components/auction-card";
 import { format } from "date-fns";
+import type { Auction, Review, Wallet } from "@/lib/types";
 
 export const Route = createFileRoute("/profile")({
   component: ProfilePage,
@@ -30,10 +31,11 @@ export const Route = createFileRoute("/profile")({
 function ProfilePage() {
   const { user, logout, refresh } = useAuth();
   const navigate = useNavigate();
-  const wallet = useStore(() => (user ? getWallet(user.id) : null));
-  const listings = useStore(() => (user ? listMyListings(user.id) : []));
-  const reviews = useStore(() => (user ? listReviewsFor(user.id) : []));
-  const myBids = useStore(() => (user ? getBids().filter((b) => b.userId === user.id) : []));
+  const [wallet, setWallet] = useState<Wallet | null>(null);
+  const [listings, setListings] = useState<Auction[]>([]);
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [totalBids, setTotalBids] = useState(0);
+  const [loading, setLoading] = useState(false);
 
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(user?.fullName ?? "");
@@ -44,9 +46,66 @@ function ProfilePage() {
   const [newPwd, setNewPwd] = useState("");
   const [pwdBusy, setPwdBusy] = useState(false);
 
-  if (!user || !wallet) return <AppShell requireAuth>{null}</AppShell>;
+  const [auctionActionModal, setAuctionActionModal] = useState<{
+    open: boolean;
+    type: "delete" | "cancel" | null;
+    auctionId: string | null;
+  }>({
+    open: false,
+    type: null,
+    auctionId: null,
+  });
+  const [actionLoading, setActionLoading] = useState(false);
 
-  const totalBids = new Set(myBids.map((b) => b.auctionId)).size;
+  const load = async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const [w, myListings, profile, bids] = await Promise.all([
+        getWallet(),
+        getMyListings(),
+        getUserProfile(user.id),
+        getMyBids(),
+      ]);
+      setWallet(w.wallet);
+      setListings(myListings);
+      setReviews(profile.reviews);
+
+      const allBids = [
+        ...(bids?.activeBids ?? []),
+        ...(bids?.pastBids ?? []),
+      ] as Array<{ auctionId?: unknown }>;
+      const auctionIds = new Set(
+        allBids
+          .map((b: any) => String(b.auctionId?._id ?? b.auctionId ?? ""))
+          .filter(Boolean),
+      );
+      setTotalBids(auctionIds.size);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to load profile");
+      setWallet(null);
+      setListings([]);
+      setReviews([]);
+      setTotalBids(0);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  useEffect(() => {
+    setName(user?.fullName ?? "");
+    setBio(user?.bio ?? "");
+  }, [user?.fullName, user?.bio]);
+
+  if (!user) return <AppShell requireAuth>{null}</AppShell>;
+  if (loading && !wallet) return <AppShell requireAuth>{null}</AppShell>;
+  if (!wallet) return <AppShell requireAuth>{null}</AppShell>;
+
   const won = listings.filter((a) => a.winnerId === user.id).length; // own won — usually 0
   const sold = listings.filter((a) => a.status === "sold").length;
 
@@ -54,6 +113,7 @@ function ProfilePage() {
     setSavingProfile(true);
     try {
       await updateProfile({ fullName: name, bio });
+      await load();
       refresh();
       setEditing(false);
       toast.success("Profile updated");
@@ -75,6 +135,38 @@ function ProfilePage() {
       toast.error(e instanceof Error ? e.message : "Failed");
     } finally {
       setPwdBusy(false);
+    }
+  };
+
+  const handleDeleteAuction = async () => {
+    if (!auctionActionModal.auctionId) return;
+    setActionLoading(true);
+    try {
+      await deleteAuction(auctionActionModal.auctionId);
+      setListings((prev) => prev.filter((a) => a.id !== auctionActionModal.auctionId));
+      setAuctionActionModal({ open: false, type: null, auctionId: null });
+      toast.success("Auction deleted");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete auction");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleCancelAuction = async () => {
+    if (!auctionActionModal.auctionId) return;
+    setActionLoading(true);
+    try {
+      const updated = await cancelAuction(auctionActionModal.auctionId);
+      setListings((prev) =>
+        prev.map((a) => (a.id === auctionActionModal.auctionId ? updated : a))
+      );
+      setAuctionActionModal({ open: false, type: null, auctionId: null });
+      toast.success("Auction cancelled");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to cancel auction");
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -167,10 +259,57 @@ function ProfilePage() {
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {listings.map((a) => (
-                  <AuctionCard key={a.id} auction={a} preview />
+                  <AuctionCard
+                    key={a.id}
+                    auction={a}
+                    currentUserId={user?.id}
+                    onDelete={(auctionId) => {
+                      setAuctionActionModal({
+                        open: true,
+                        type: "delete",
+                        auctionId,
+                      });
+                    }}
+                    onCancel={(auctionId) => {
+                      setAuctionActionModal({
+                        open: true,
+                        type: "cancel",
+                        auctionId,
+                      });
+                    }}
+                  />
                 ))}
               </div>
             )}
+            
+            <AuctionActionModal
+              open={auctionActionModal.open}
+              onOpenChange={(open) => {
+                if (!open) {
+                  setAuctionActionModal({ open: false, type: null, auctionId: null });
+                }
+              }}
+              title={
+                auctionActionModal.type === "delete"
+                  ? "Delete auction?"
+                  : "Cancel auction?"
+              }
+              description={
+                auctionActionModal.type === "delete"
+                  ? "This auction will be permanently deleted. You cannot undo this action."
+                  : "This auction will be cancelled and marked as unavailable. Bidders will be notified."
+              }
+              actionLabel={
+                auctionActionModal.type === "delete" ? "Delete" : "Cancel auction"
+              }
+              isDangerous={true}
+              isLoading={actionLoading}
+              onConfirm={
+                auctionActionModal.type === "delete"
+                  ? handleDeleteAuction
+                  : handleCancelAuction
+              }
+            />
           </TabsContent>
 
           <TabsContent value="reviews" className="mt-4 space-y-3">

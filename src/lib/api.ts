@@ -1,90 +1,231 @@
-import type {
-  Auction,
-  Bid,
-  NotificationPrefs,
-  Review,
-  Transaction,
-  User,
-  Wallet,
-} from "./types";
-import { KEYS, storage, uid } from "./storage";
-import { eventBus } from "./events";
-import { maybeSeed } from "./seed";
+import type { Auction, Bid, NotificationPrefs, Review, Transaction, User, Wallet } from "./types";
 
-// ---------- helpers ----------
-const now = () => Date.now();
+// Centralized JWT storage key (matches requirement)
+const TOKEN_KEY = "token";
+const UI_PREFS_KEY = "ua_prefs_ui";
 
-interface StoredUser extends User {
-  passwordHash: string; // mock hash
-}
+type ApiEnvelope<T> =
+  | { success: true; data: T; message?: string }
+  | { success: false; message?: string; errors?: unknown };
 
-const mockHash = (pwd: string) => `mock_${btoa(pwd)}`;
-const verifyHash = (pwd: string, hash: string) => mockHash(pwd) === hash;
-
-function getUsers(): StoredUser[] {
-  return storage.get<StoredUser[]>(KEYS.users, []);
-}
-function setUsers(u: StoredUser[]) {
-  storage.set(KEYS.users, u);
+export class ApiError extends Error {
+  status: number;
+  payload?: unknown;
+  constructor(message: string, status: number, payload?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.payload = payload;
+  }
 }
 
-export function getAuctions(): Auction[] {
-  return storage.get<Auction[]>(KEYS.auctions, []);
-}
-function setAuctions(a: Auction[]) {
-  storage.set(KEYS.auctions, a);
+const apiBaseUrl = () => {
+  const raw = import.meta.env.VITE_API_URL as string | undefined;
+  if (!raw) return "";
+  return raw.replace(/\/+$/, "");
+};
+
+export function getToken() {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TOKEN_KEY);
 }
 
-export function getBids(): Bid[] {
-  return storage.get<Bid[]>(KEYS.bids, []);
-}
-function setBids(b: Bid[]) {
-  storage.set(KEYS.bids, b);
+export function setToken(token: string) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(TOKEN_KEY, token);
 }
 
-function getWallets(): Record<string, Wallet> {
-  return storage.get<Record<string, Wallet>>(KEYS.wallets, {});
-}
-function setWallets(w: Record<string, Wallet>) {
-  storage.set(KEYS.wallets, w);
+export function clearToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(TOKEN_KEY);
 }
 
-function getTransactions(): Transaction[] {
-  return storage.get<Transaction[]>(KEYS.transactions, []);
-}
-function setTransactions(t: Transaction[]) {
-  storage.set(KEYS.transactions, t);
-}
-
-function getReviews(): Review[] {
-  return storage.get<Review[]>(KEYS.reviews, []);
+function toMessage(payload: unknown, fallback: string) {
+  if (typeof payload === "string" && payload.trim()) return payload;
+  if (payload && typeof payload === "object" && "message" in payload) {
+    const m = (payload as { message?: unknown }).message;
+    if (typeof m === "string" && m.trim()) return m;
+  }
+  return fallback;
 }
 
-// ---------- init ----------
-export function initMockBackend() {
-  maybeSeed();
+async function parseJsonSafely(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
+export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getToken();
+  const url = `${apiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+
+  const headers = new Headers(options.headers);
+  if (!headers.has("Content-Type") && options.body) headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(url, {
+    ...options,
+    headers,
+  });
+
+  const payload = await parseJsonSafely(res);
+
+  if (!res.ok) {
+    // Backend often sends JSON { success:false, message }, but may send plain text too.
+    if (res.status === 401) {
+      clearToken();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("auth:logout"));
+      }
+    }
+    const msg =
+      res.status === 413
+        ? "Upload too large. Please upload fewer/smaller images and try again."
+        : toMessage(payload, `Request failed (${res.status})`);
+    throw new ApiError(msg, res.status, payload);
+  }
+
+  // If backend uses { success, data }, unwrap automatically.
+  if (payload && typeof payload === "object" && "success" in payload) {
+    const env = payload as ApiEnvelope<T>;
+    if (env.success) return env.data;
+    throw new ApiError(toMessage(payload, "Request failed"), res.status, payload);
+  }
+
+  return payload as T;
+}
+
+// ---------- mapping helpers ----------
+const asMs = (d: unknown): number => {
+  if (typeof d === "number") return d;
+  if (typeof d === "string") {
+    const t = Date.parse(d);
+    if (!Number.isNaN(t)) return t;
+  }
+  if (d instanceof Date) return d.getTime();
+  return Date.now();
+};
+
+// Note: auctions list endpoint does not populate seller details.
+// Some seeded auctions may reference missing users; avoid spamming 404s by not enriching here.
+
+function mapAuctionCard(a: any): Auction {
+  const sellerId = String(a.sellerId?._id ?? a.sellerId);
+  const rawImages = Array.isArray(a.images) ? (a.images as string[]) : [];
+  
+  const images = rawImages
+    .map((src) => {
+      if (typeof src === "string") {
+        // Keep data URLs and valid HTTP(S) URLs as-is
+        if (src.startsWith("data:") || src.startsWith("http://") || src.startsWith("https://")) {
+          return src;
+        }
+        // Only replace mock-cloudinary URLs with a placeholder based on auction ID
+        if (src.includes("mock-cloudinary.unibid-exchange.local")) {
+          console.log(`[mapAuctionCard] Replacing mock URL for auction ${a._id}`);
+          return `https://picsum.photos/seed/${String(a._id ?? a.id)}/800/600`;
+        }
+      }
+      return src;
+    })
+    .filter((src): src is string => typeof src === "string");
+
+  return {
+    id: String(a._id ?? a.id),
+    sellerId,
+    sellerName: String(a.sellerName ?? a.sellerId?.fullName ?? "Student"),
+    sellerTrust: Number(a.sellerTrust ?? a.sellerId?.trustScore ?? 5),
+    title: String(a.title ?? ""),
+    description: String(a.description ?? ""),
+    category: a.category,
+    condition: (a.condition ?? "Good") as Auction["condition"], // backend doesn't store condition yet
+    images,
+    startingPrice: Number(a.startingPrice ?? 0),
+    currentBid: Number(a.currentBid ?? 0),
+    bidCount: Number(a.bidCount ?? 0),
+    endsAt: asMs(a.endsAt),
+    createdAt: asMs(a.createdAt),
+    status: (a.status === "processing" ? "active" : a.status) as Auction["status"],
+    winnerId: a.winnerId ? String(a.winnerId) : undefined,
+  };
+}
+
+function mapBid(b: any): Bid {
+  return {
+    id: String(b._id ?? b.id),
+    auctionId: String(b.auctionId?._id ?? b.auctionId),
+    userId: String(b.userId?._id ?? b.userId),
+    userName: String(b.userName ?? b.userId?.fullName ?? "Unknown"),
+    amount: Number(b.amount ?? 0),
+    createdAt: asMs(b.createdAt),
+  };
+}
+
+function mapWallet(w: any): Wallet {
+  return {
+    userId: String(w.userId?._id ?? w.userId),
+    balance: Number(w.balance ?? 0),
+    held: Number(w.held ?? 0),
+    totalDeposited: Number(w.totalDeposited ?? 0),
+    totalSpent: Number(w.totalSpent ?? 0),
+  };
+}
+
+function mapTransaction(t: any): Transaction {
+  const rawType = String(t.type ?? "unknown");
+  const rawAmount = Number(t.amount ?? 0);
+  const signedAmount =
+    rawType === "debit" || rawType === "hold" ? -Math.abs(rawAmount) : Math.abs(rawAmount);
+  return {
+    id: String(t._id ?? t.id),
+    userId: String(t.userId?._id ?? t.userId),
+    type: rawType as Transaction["type"],
+    amount: signedAmount,
+    description: String(t.description ?? ""),
+    status: String(t.status ?? "completed") as Transaction["status"],
+    createdAt: asMs(t.createdAt),
+  };
 }
 
 // ---------- auth ----------
-const EMAIL_RE = /^([a-zA-Z0-9]+)@mahindrauniversity\.edu\.in$/;
-
-export interface Session {
-  token: string;
-  userId: string;
+export async function authMe(): Promise<User> {
+  const data = await api<{ user: any }>(`/api/auth/me`);
+  const u = data.user;
+  return {
+    id: String(u.id ?? u._id),
+    fullName: u.fullName,
+    studentId: u.studentId,
+    email: u.email,
+    university: u.university,
+    trustScore: Number(u.trustScore ?? 5),
+    avatarUrl: u.avatarUrl ?? undefined,
+    bio: u.bio ?? undefined,
+    createdAt: asMs(u.createdAt),
+  };
 }
 
-export function getSession(): Session | null {
-  return storage.get<Session | null>(KEYS.session, null);
-}
-
-export function getCurrentUser(): User | null {
-  const s = getSession();
-  if (!s) return null;
-  const u = getUsers().find((x) => x.id === s.userId);
-  if (!u) return null;
-  const { passwordHash: _ph, ...pub } = u;
-  void _ph;
-  return pub;
+export async function login(email: string, password: string): Promise<User> {
+  const data = await api<{ token: string; user: any }>(`/api/auth/login`, {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+  setToken(data.token);
+  const u = data.user;
+  return {
+    id: String(u.id ?? u._id),
+    fullName: u.fullName,
+    studentId: u.studentId,
+    email: u.email,
+    university: u.university,
+    trustScore: Number(u.trustScore ?? 5),
+    avatarUrl: u.avatarUrl ?? undefined,
+    bio: u.bio ?? undefined,
+    createdAt: asMs(u.createdAt),
+  };
 }
 
 export async function register(input: {
@@ -93,176 +234,78 @@ export async function register(input: {
   email: string;
   password: string;
 }): Promise<User> {
-  const m = input.email.match(EMAIL_RE);
-  if (!m) throw new Error("Email must be a valid Mahindra University address.");
-
-  const users = getUsers();
-  if (users.some((u) => u.email.toLowerCase() === input.email.toLowerCase())) {
-    throw new Error("An account with this email already exists.");
-  }
-
-  const id = `u_${uid()}`;
-  const newUser: StoredUser = {
-    id,
-    fullName: input.fullName,
-    studentId: input.studentId,
-    email: input.email.toLowerCase(),
-    university: "Mahindra University",
-    trustScore: 5,
-    createdAt: now(),
-    passwordHash: mockHash(input.password),
+  const data = await api<{ token: string; user: any }>(`/api/auth/register`, {
+    method: "POST",
+    body: JSON.stringify({
+      ...input,
+      university: "Mahindra University",
+    }),
+  });
+  setToken(data.token);
+  const u = data.user;
+  return {
+    id: String(u.id ?? u._id),
+    fullName: u.fullName,
+    studentId: u.studentId,
+    email: u.email,
+    university: u.university,
+    trustScore: Number(u.trustScore ?? 5),
+    avatarUrl: u.avatarUrl ?? undefined,
+    bio: u.bio ?? undefined,
+    createdAt: asMs(u.createdAt),
   };
-  setUsers([...users, newUser]);
-
-  // Starter wallet with 500 unicoins so user can try bidding
-  const wallets = getWallets();
-  wallets[id] = {
-    userId: id,
-    balance: 500,
-    held: 0,
-    totalDeposited: 500,
-    totalSpent: 0,
-  };
-  setWallets(wallets);
-
-  setTransactions([
-    ...getTransactions(),
-    {
-      id: uid(),
-      userId: id,
-      type: "purchase",
-      amount: 500,
-      description: "Welcome bonus — 500 Unicoins",
-      status: "completed",
-      createdAt: now(),
-    },
-  ]);
-
-  // Auto-login
-  storage.set(KEYS.session, { token: `mock_jwt_${id}`, userId: id });
-  const { passwordHash: _ph2, ...pub } = newUser;
-  void _ph2;
-  return pub;
-}
-
-export async function login(email: string, password: string): Promise<User> {
-  const u = getUsers().find((x) => x.email.toLowerCase() === email.toLowerCase());
-  if (!u || !verifyHash(password, u.passwordHash)) {
-    throw new Error("Invalid email or password.");
-  }
-  storage.set(KEYS.session, { token: `mock_jwt_${u.id}`, userId: u.id });
-  const { passwordHash: _ph, ...pub } = u;
-  void _ph;
-  return pub;
 }
 
 export function logout() {
-  storage.remove(KEYS.session);
+  clearToken();
 }
 
 export async function updateProfile(patch: Partial<Pick<User, "fullName" | "bio" | "avatarUrl">>) {
-  const s = getSession();
-  if (!s) throw new Error("Not authenticated");
-  const users = getUsers();
-  const idx = users.findIndex((u) => u.id === s.userId);
-  if (idx < 0) throw new Error("User not found");
-  users[idx] = { ...users[idx], ...patch };
-  setUsers(users);
+  const data = await api<any>(`/api/users/me`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+  return data as unknown;
 }
 
 export async function changePassword(oldPwd: string, newPwd: string) {
-  const s = getSession();
-  if (!s) throw new Error("Not authenticated");
-  const users = getUsers();
-  const idx = users.findIndex((u) => u.id === s.userId);
-  if (idx < 0) throw new Error("User not found");
-  if (!verifyHash(oldPwd, users[idx].passwordHash))
-    throw new Error("Current password is incorrect.");
-  users[idx] = { ...users[idx], passwordHash: mockHash(newPwd) };
-  setUsers(users);
+  await api(`/api/users/me/password`, {
+    method: "POST",
+    body: JSON.stringify({ oldPassword: oldPwd, newPassword: newPwd }),
+  });
 }
 
-// ---------- wallet ----------
-export function getWallet(userId: string): Wallet {
-  const wallets = getWallets();
-  if (!wallets[userId]) {
-    wallets[userId] = {
-      userId,
-      balance: 0,
-      held: 0,
-      totalDeposited: 0,
-      totalSpent: 0,
-    };
-    setWallets(wallets);
-  }
-  return wallets[userId];
+// ---------- auctions ----------
+export type ListAuctionsParams = {
+  category?: string;
+  q?: string;
+  sort?: "endingSoon" | "priceLowToHigh" | "priceHighToLow";
+  page?: number;
+  limit?: number;
+};
+
+export async function listAuctions(params: ListAuctionsParams = {}): Promise<Auction[]> {
+  const qs = new URLSearchParams();
+  if (params.category) qs.set("category", params.category);
+  if (params.q) qs.set("q", params.q);
+  if (params.sort) qs.set("sort", params.sort);
+  qs.set("page", String(params.page ?? 1));
+  qs.set("limit", String(params.limit ?? 100));
+
+  const data = await api<{ items: any[] }>(`/api/auctions?${qs.toString()}`);
+  return (data.items ?? []).map(mapAuctionCard);
 }
 
-export function listTransactions(userId: string): Transaction[] {
-  return getTransactions()
-    .filter((t) => t.userId === userId)
-    .sort((a, b) => b.createdAt - a.createdAt);
-}
+export type AuctionDetail = {
+  auction: Auction;
+  bids: Bid[];
+};
 
-export async function buyUnicoins(userId: string, amount: number) {
-  const wallets = getWallets();
-  const w = getWallet(userId);
-  wallets[userId] = {
-    ...w,
-    balance: w.balance + amount,
-    totalDeposited: w.totalDeposited + amount,
-  };
-  setWallets(wallets);
-  setTransactions([
-    ...getTransactions(),
-    {
-      id: uid(),
-      userId,
-      type: "purchase",
-      amount,
-      description: `Purchased ${amount} Unicoins (Test mode)`,
-      status: "completed",
-      createdAt: now(),
-    },
-  ]);
-}
-
-export async function withdrawUnicoins(userId: string, amount: number) {
-  const wallets = getWallets();
-  const w = getWallet(userId);
-  if (w.balance < amount) throw new Error("Insufficient balance.");
-  wallets[userId] = { ...w, balance: w.balance - amount };
-  setWallets(wallets);
-  setTransactions([
-    ...getTransactions(),
-    {
-      id: uid(),
-      userId,
-      type: "withdrawal",
-      amount: -amount,
-      description: `Withdrew ${amount} Unicoins to bank (Test mode)`,
-      status: "completed",
-      createdAt: now(),
-    },
-  ]);
-}
-
-// ---------- auctions / bids ----------
-export function listAuctions(): Auction[] {
-  // Settle expired ones lazily
-  settleExpired();
-  return getAuctions();
-}
-
-export function getAuction(id: string): Auction | undefined {
-  settleExpired();
-  return getAuctions().find((a) => a.id === id);
-}
-
-export function listBidsFor(auctionId: string): Bid[] {
-  return getBids()
-    .filter((b) => b.auctionId === auctionId)
-    .sort((a, b) => b.amount - a.amount);
+export async function getAuction(id: string): Promise<AuctionDetail> {
+  const data = await api<any>(`/api/auctions/${id}`);
+  const auction = mapAuctionCard(data);
+  const bids = Array.isArray(data.bidHistory) ? data.bidHistory.map(mapBid) : [];
+  return { auction, bids };
 }
 
 export function minNextBid(a: Auction): number {
@@ -279,226 +322,124 @@ export async function createAuction(input: {
   startingPrice: number;
   durationMinutes: number;
 }): Promise<Auction> {
-  const me = getCurrentUser();
-  if (!me) throw new Error("Not authenticated");
-  const a: Auction = {
-    id: `a_${uid()}`,
-    sellerId: me.id,
-    sellerName: me.fullName,
-    sellerTrust: me.trustScore,
-    title: input.title,
-    description: input.description,
-    category: input.category,
-    condition: input.condition,
-    images: input.images.length ? input.images : [`https://picsum.photos/seed/${uid()}/800/600`],
-    startingPrice: input.startingPrice,
-    currentBid: input.startingPrice,
-    bidCount: 0,
-    endsAt: now() + input.durationMinutes * 60_000,
-    createdAt: now(),
-    status: "active",
-  };
-  setAuctions([a, ...getAuctions()]);
-  return a;
-}
+  const endsAt = new Date(Date.now() + input.durationMinutes * 60_000).toISOString();
+  const images =
+    (Array.isArray(input.images) ? input.images : [])
+      .map((s) => (typeof s === "string" ? s.trim() : ""))
+      .filter(Boolean) ?? [];
+  const safeImages =
+    images.length > 0 ? images : [`https://picsum.photos/seed/${encodeURIComponent(input.title || "auction")}/800/600`];
+  
+  console.log(`[createAuction] Sending ${safeImages.length} images:`, 
+    safeImages.map((img, i) => `[${i}] ${img.substring(0, 100)}...`));
 
-export async function placeBid(auctionId: string, amount: number) {
-  const me = getCurrentUser();
-  if (!me) throw new Error("Not authenticated");
-
-  const auctions = getAuctions();
-  const idx = auctions.findIndex((a) => a.id === auctionId);
-  if (idx < 0) throw new Error("Auction not found");
-  const a = auctions[idx];
-  if (a.status !== "active" || a.endsAt <= now()) throw new Error("Auction has ended.");
-  if (a.sellerId === me.id) throw new Error("You can't bid on your own auction.");
-
-  const min = minNextBid(a);
-  if (amount < min) throw new Error(`Minimum bid is ${min} Unicoins.`);
-
-  const wallets = getWallets();
-  const w = getWallet(me.id);
-  if (w.balance < amount) throw new Error("Not enough Unicoins. Top up your wallet.");
-
-  // Refund previous highest bidder if it's not the same user
-  const prevBids = getBids().filter((b) => b.auctionId === auctionId);
-  const prevHigh = prevBids.sort((x, y) => y.amount - x.amount)[0];
-  if (prevHigh && prevHigh.userId !== me.id) {
-    const pw = getWallet(prevHigh.userId);
-    wallets[prevHigh.userId] = {
-      ...pw,
-      balance: pw.balance + prevHigh.amount,
-      held: Math.max(0, pw.held - prevHigh.amount),
-    };
-    setTransactions([
-      ...getTransactions(),
-      {
-        id: uid(),
-        userId: prevHigh.userId,
-        type: "bid_release",
-        amount: prevHigh.amount,
-        description: `Outbid on "${a.title}" — refund`,
-        status: "completed",
-        createdAt: now(),
-      },
-    ]);
-  } else if (prevHigh && prevHigh.userId === me.id) {
-    // increasing own bid: release the prior hold
-    wallets[me.id] = {
-      ...w,
-      balance: w.balance + prevHigh.amount,
-      held: Math.max(0, w.held - prevHigh.amount),
-    };
-  }
-
-  // Hold new bid amount
-  const w2 = wallets[me.id] ?? w;
-  if (w2.balance < amount) throw new Error("Not enough Unicoins.");
-  wallets[me.id] = {
-    ...w2,
-    balance: w2.balance - amount,
-    held: w2.held + amount,
-  };
-  setWallets(wallets);
-
-  setTransactions([
-    ...getTransactions(),
-    {
-      id: uid(),
-      userId: me.id,
-      type: "bid_hold",
-      amount: -amount,
-      description: `Bid placed on "${a.title}"`,
-      status: "completed",
-      createdAt: now(),
-    },
-  ]);
-
-  const newBid: Bid = {
-    id: uid(),
-    auctionId,
-    userId: me.id,
-    userName: me.fullName,
-    amount,
-    createdAt: now(),
-  };
-  setBids([newBid, ...getBids()]);
-
-  auctions[idx] = {
-    ...a,
-    currentBid: amount,
-    bidCount: a.bidCount + 1,
-  };
-  setAuctions(auctions);
-}
-
-function settleExpired() {
-  const auctions = getAuctions();
-  const wallets = getWallets();
-  let walletsChanged = false;
-  let auctionsChanged = false;
-  const txAdds: Transaction[] = [];
-  const t = now();
-
-  auctions.forEach((a, i) => {
-    if (a.status === "active" && a.endsAt <= t) {
-      auctionsChanged = true;
-      const top = getBids()
-        .filter((b) => b.auctionId === a.id)
-        .sort((x, y) => y.amount - x.amount)[0];
-
-      if (top) {
-        // Transfer held coins from winner to seller
-        const wWinner = wallets[top.userId] ?? {
-          userId: top.userId,
-          balance: 0,
-          held: 0,
-          totalDeposited: 0,
-          totalSpent: 0,
-        };
-        wallets[top.userId] = {
-          ...wWinner,
-          held: Math.max(0, wWinner.held - top.amount),
-          totalSpent: wWinner.totalSpent + top.amount,
-        };
-        const wSeller = wallets[a.sellerId] ?? {
-          userId: a.sellerId,
-          balance: 0,
-          held: 0,
-          totalDeposited: 0,
-          totalSpent: 0,
-        };
-        wallets[a.sellerId] = {
-          ...wSeller,
-          balance: wSeller.balance + top.amount,
-        };
-        walletsChanged = true;
-
-        txAdds.push(
-          {
-            id: uid(),
-            userId: top.userId,
-            type: "purchase_debit",
-            amount: -top.amount,
-            description: `Won "${a.title}" — final purchase`,
-            status: "completed",
-            createdAt: t,
-          },
-          {
-            id: uid(),
-            userId: a.sellerId,
-            type: "sale_credit",
-            amount: top.amount,
-            description: `Sold "${a.title}"`,
-            status: "completed",
-            createdAt: t,
-          },
-        );
-        auctions[i] = { ...a, status: "sold", winnerId: top.userId };
-      } else {
-        auctions[i] = { ...a, status: "expired" };
-      }
-    }
+  const data = await api<any>(`/api/auctions`, {
+    method: "POST",
+    body: JSON.stringify({
+      title: input.title,
+      description: input.description,
+      category: input.category,
+      startingPrice: input.startingPrice,
+      endsAt,
+      images: safeImages,
+    }),
   });
-
-  if (auctionsChanged) setAuctions(auctions);
-  if (walletsChanged) setWallets(wallets);
-  if (txAdds.length) setTransactions([...getTransactions(), ...txAdds]);
-  if (auctionsChanged) eventBus.emit();
+  
+  console.log(`[createAuction] Response auction created with ID ${data._id}:`, 
+    data.images?.map((img: string, i: number) => `[${i}] ${img.substring(0, 100)}...`));
+  
+  // Backend doesn't store condition; we keep it client-side only in preview.
+  return mapAuctionCard(data);
 }
 
-// ---------- profile / reviews ----------
-export function listReviewsFor(sellerId: string): Review[] {
-  return getReviews()
-    .filter((r) => r.sellerId === sellerId)
-    .sort((a, b) => b.createdAt - a.createdAt);
-}
-
-export function listMyListings(userId: string): Auction[] {
-  return getAuctions()
-    .filter((a) => a.sellerId === userId)
-    .sort((a, b) => b.createdAt - a.createdAt);
-}
-
-export function listMyBids(userId: string): { auction: Auction; topBid: Bid; myTop: Bid }[] {
-  const myBids = getBids().filter((b) => b.userId === userId);
-  const auctionIds = Array.from(new Set(myBids.map((b) => b.auctionId)));
-  const all = getAuctions();
-  const out: { auction: Auction; topBid: Bid; myTop: Bid }[] = [];
-  auctionIds.forEach((aid) => {
-    const a = all.find((x) => x.id === aid);
-    if (!a) return;
-    const bidsFor = getBids().filter((b) => b.auctionId === aid);
-    const topBid = [...bidsFor].sort((x, y) => y.amount - x.amount)[0];
-    const myTop = [...bidsFor]
-      .filter((b) => b.userId === userId)
-      .sort((x, y) => y.amount - x.amount)[0];
-    if (topBid && myTop) out.push({ auction: a, topBid, myTop });
+export async function deleteAuction(auctionId: string): Promise<void> {
+  await api<void>(`/api/auctions/${auctionId}`, {
+    method: "DELETE",
   });
-  return out;
 }
 
-// ---------- prefs ----------
+export async function cancelAuction(auctionId: string): Promise<Auction> {
+  const data = await api<any>(`/api/auctions/${auctionId}/cancel`, {
+    method: "POST",
+  });
+  return mapAuctionCard(data);
+}
+
+// ---------- bids ----------
+export async function placeBid(auctionId: string, amount: number): Promise<Auction> {
+  const data = await api<any>(`/api/bids`, {
+    method: "POST",
+    body: JSON.stringify({ auctionId, amount }),
+  });
+  return mapAuctionCard(data);
+}
+
+// ---------- wallet ----------
+export async function getWallet(): Promise<{ wallet: Wallet; transactions: Transaction[] }> {
+  const data = await api<any>(`/api/wallet?limit=100&page=1`);
+  return {
+    wallet: mapWallet(data.wallet),
+    transactions: Array.isArray(data.transactions) ? data.transactions.map(mapTransaction) : [],
+  };
+}
+
+export async function buyUnicoins(amount: number) {
+  const data = await api<any>(`/api/wallet/buy`, {
+    method: "POST",
+    body: JSON.stringify({ amount }),
+  });
+  return mapWallet(data);
+}
+
+export async function withdrawUnicoins(amount: number) {
+  const data = await api<any>(`/api/wallet/withdraw`, {
+    method: "POST",
+    body: JSON.stringify({ amount }),
+  });
+  return mapWallet(data);
+}
+
+// ---------- profile ----------
+export async function getUserProfile(id: string): Promise<{ user: User; listings: Auction[]; reviews: Review[] }> {
+  const data = await api<any>(`/api/users/${id}`);
+  const u = data.user;
+  const user: User = {
+    id: String(u.id ?? u._id),
+    fullName: u.fullName,
+    studentId: u.studentId ?? "",
+    email: u.email ?? "",
+    university: u.university,
+    trustScore: Number(u.trustScore ?? 5),
+    avatarUrl: u.avatarUrl ?? undefined,
+    bio: u.bio ?? undefined,
+    createdAt: asMs(u.createdAt),
+  };
+  return {
+    user,
+    listings: Array.isArray(data.listings) ? data.listings.map(mapAuctionCard) : [],
+    reviews: Array.isArray(data.reviews)
+      ? data.reviews.map((r: any) => ({
+          id: String(r._id ?? r.id),
+          sellerId: String(r.sellerId?._id ?? r.sellerId ?? id),
+          reviewerName: String(r.reviewerId?.fullName ?? "Anonymous"),
+          rating: Number(r.rating ?? 0),
+          text: String(r.text ?? ""),
+          createdAt: asMs(r.createdAt),
+        }))
+      : [],
+  };
+}
+
+export async function getMyListings(): Promise<Auction[]> {
+  const data = await api<any>(`/api/users/me/listings`);
+  return Array.isArray(data) ? data.map(mapAuctionCard) : [];
+}
+
+export async function getMyBids(): Promise<any> {
+  return api<any>(`/api/users/me/bids`);
+}
+
+// ---------- notification prefs (settings) ----------
 const DEFAULT_PREFS: NotificationPrefs = {
   outbid: true,
   endingSoon: true,
@@ -509,14 +450,51 @@ const DEFAULT_PREFS: NotificationPrefs = {
   showBidHistory: true,
 };
 
-export function getPrefs(userId: string): NotificationPrefs {
-  return storage.get<NotificationPrefs>(`${KEYS.prefs}_${userId}`, DEFAULT_PREFS);
-}
-export function setPrefs(userId: string, prefs: NotificationPrefs) {
-  storage.set(`${KEYS.prefs}_${userId}`, prefs);
+function loadUiPrefs(userId: string): Partial<NotificationPrefs> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(`${UI_PREFS_KEY}:${userId}`);
+    if (!raw) return {};
+    return JSON.parse(raw) as Partial<NotificationPrefs>;
+  } catch {
+    return {};
+  }
 }
 
-// Periodic settlement so the UI reflects ended auctions even without user actions
-if (typeof window !== "undefined") {
-  setInterval(() => settleExpired(), 5000);
+function saveUiPrefs(userId: string, prefs: Partial<NotificationPrefs>) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(`${UI_PREFS_KEY}:${userId}`, JSON.stringify(prefs));
+}
+
+export async function getPrefs(userId: string): Promise<NotificationPrefs> {
+  const ui = loadUiPrefs(userId);
+  const data = await api<any>(`/api/users/me/prefs`);
+  const mapped: Partial<NotificationPrefs> = {
+    outbid: !!data.outbidAlerts,
+    endingSoon: !!data.auctionReminders,
+    marketing: !!data.marketingEmails,
+    // backend doesn't have separate "won" and "newBidOnMine"; map from bidUpdates as best-effort
+    won: !!data.bidUpdates,
+    newBidOnMine: !!data.bidUpdates,
+  };
+  return { ...DEFAULT_PREFS, ...mapped, ...ui };
+}
+
+export async function setPrefs(userId: string, prefs: NotificationPrefs) {
+  // Persist what backend supports
+  await api(`/api/users/me/prefs`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      outbidAlerts: prefs.outbid,
+      auctionReminders: prefs.endingSoon,
+      bidUpdates: prefs.won || prefs.newBidOnMine,
+      marketingEmails: prefs.marketing,
+      emailNotifications: true,
+    }),
+  });
+  // UI-only switches (backend doesn't have fields)
+  saveUiPrefs(userId, {
+    showProfile: prefs.showProfile,
+    showBidHistory: prefs.showBidHistory,
+  });
 }

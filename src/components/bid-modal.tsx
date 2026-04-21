@@ -15,8 +15,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Countdown } from "./countdown";
 import { UnicoinAmount, UnicoinIcon } from "./unicoin";
 import { useAuth } from "@/lib/auth-context";
-import { useStore } from "@/lib/hooks";
-import { getAuction, getWallet, listBidsFor, minNextBid, placeBid } from "@/lib/api";
+import { getAuction, getWallet, minNextBid, placeBid, type AuctionDetail } from "@/lib/api";
 import {
   Table,
   TableBody,
@@ -26,6 +25,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDistanceToNowStrict } from "date-fns";
+import { getSocket, joinAuctionRoom } from "@/lib/socket";
+import { ApiError } from "@/lib/api";
 
 export function BidModal({
   auctionId,
@@ -38,9 +39,14 @@ export function BidModal({
 }) {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const auction = useStore(() => (auctionId ? getAuction(auctionId) : undefined));
-  const bids = useStore(() => (auctionId ? listBidsFor(auctionId) : []));
-  const wallet = useStore(() => (user ? getWallet(user.id) : null));
+  const [detail, setDetail] = useState<AuctionDetail | null>(null);
+  const auction = detail?.auction;
+  const bids = detail?.bids ?? [];
+  const [wallet, setWallet] = useState<Awaited<ReturnType<typeof getWallet>>["wallet"] | null>(
+    null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
 
   const [activeImg, setActiveImg] = useState(0);
   const [customAmount, setCustomAmount] = useState<string>("");
@@ -50,6 +56,68 @@ export function BidModal({
     setActiveImg(0);
     setCustomAmount("");
   }, [auctionId]);
+
+  const refetch = async () => {
+    if (!auctionId) return;
+    setLoading(true);
+    setLoadErr(null);
+    try {
+      const d = await getAuction(auctionId);
+      setDetail(d);
+      if (user) {
+        const w = await getWallet();
+        setWallet(w.wallet);
+      } else {
+        setWallet(null);
+      }
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : "Could not load auction");
+      setDetail(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!open || !auctionId) return;
+    void refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, auctionId, user?.id]);
+
+  useEffect(() => {
+    if (!open || !auctionId) return;
+    const s = getSocket();
+    const leave = joinAuctionRoom(auctionId);
+
+    const onUpdate = (payload: any) => {
+      if (!payload || String(payload.auctionId) !== String(auctionId)) return;
+      setDetail((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          auction: {
+            ...prev.auction,
+            currentBid: Number(payload.currentBid ?? prev.auction.currentBid),
+            bidCount: Number(payload.bidCount ?? prev.auction.bidCount),
+          },
+        };
+      });
+    };
+
+    const onConnect = () => {
+      // reconnect safety: refresh snapshot from REST
+      void refetch();
+    };
+
+    s.on("auction:update", onUpdate);
+    s.on("connect", onConnect);
+    return () => {
+      s.off("auction:update", onUpdate);
+      s.off("connect", onConnect);
+      leave();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, auctionId]);
 
   const minBid = useMemo(() => (auction ? minNextBid(auction) : 0), [auction]);
   const ended = auction ? auction.status !== "active" || auction.endsAt <= Date.now() : true;
@@ -67,19 +135,47 @@ export function BidModal({
       await placeBid(auction.id, amount);
       toast.success(`Bid placed at ${amount} Unicoins`);
       setCustomAmount("");
+      // Re-fetch after bid to avoid relying solely on socket events.
+      await refetch();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not place bid");
+      if (e instanceof ApiError) {
+        if (e.status === 429) {
+          toast.error("Bid failed: rate limited. Please wait a few seconds and try again.");
+        } else if (e.status === 400) {
+          // backend uses 400 for most bid validation cases (ended, insufficient, too low, own auction)
+          toast.error(`Bid failed: ${e.message}`);
+        } else if (e.status === 409) {
+          toast.error(`Bid failed: ${e.message}`);
+        } else {
+          toast.error(`Bid failed: ${e.message}`);
+        }
+      } else {
+        toast.error(e instanceof Error ? `Bid failed: ${e.message}` : "Bid failed");
+      }
     } finally {
       setSubmitting(false);
     }
   };
+
+  if (!auctionId || loading) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-md">
+          <DialogTitle>Loading auction…</DialogTitle>
+          <p className="text-sm text-muted-foreground">Fetching latest details from the server.</p>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   if (!auction) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-md">
           <DialogTitle>Auction unavailable</DialogTitle>
-          <p className="text-sm text-muted-foreground">This auction can't be loaded right now.</p>
+          <p className="text-sm text-muted-foreground">
+            {loadErr ?? "This auction can't be loaded right now."}
+          </p>
         </DialogContent>
       </Dialog>
     );

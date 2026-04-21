@@ -89,6 +89,9 @@ function SellPage() {
   const onSubmit = async (data: Values) => {
     setSubmitting(true);
     try {
+      console.log(`[SellPage] Submitting auction with ${images.length} images:`,
+        images.map((img, i) => `[${i}] ${img.substring(0, 100)}...`));
+      
       await createAuction({
         ...data,
         images,

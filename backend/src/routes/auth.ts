@@ -21,7 +21,10 @@ const registerSchema = z.object({
     .trim()
     .toLowerCase()
     .email("A valid university email is required")
-    .refine((email) => email.endsWith(".edu"), "Email must use a university .edu domain"),
+    .refine(
+      (email) => /(?:\.edu|\.edu\.[a-z]{2,})$/i.test(email),
+      "Email must use a university .edu domain",
+    ),
   password: z.string().min(8, "Password must be at least 8 characters long"),
   university: z.string().trim().min(1, "University is required"),
   avatarUrl: z.string().trim().url("Avatar URL must be valid").optional(),

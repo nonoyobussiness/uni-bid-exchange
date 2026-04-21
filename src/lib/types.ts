@@ -1,6 +1,6 @@
 export type Category = "Electronics" | "Books" | "Apparel" | "Dorm" | "Tickets" | "Other";
 export type Condition = "New" | "Like-new" | "Good" | "Fair";
-export type AuctionStatus = "active" | "sold" | "expired";
+export type AuctionStatus = "active" | "sold" | "expired" | "cancelled";
 
 export interface User {
   id: string;
@@ -48,7 +48,14 @@ export type TxType =
   | "bid_hold"
   | "bid_release"
   | "sale_credit"
-  | "purchase_debit";
+  | "purchase_debit"
+  // backend transaction types
+  | "credit"
+  | "debit"
+  | "hold"
+  | "release"
+  // future-proofing: allow backend to introduce new types without breaking UI
+  | (string & {});
 
 export interface Transaction {
   id: string;

@@ -3,6 +3,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { AppHeader } from "./app-header";
+import { disconnectSocket, getSocket, reconnectSocketWithToken } from "@/lib/socket";
+import { toast } from "sonner";
 
 export function AppShell({ children, requireAuth = false }: { children: ReactNode; requireAuth?: boolean }) {
   const { user } = useAuth();
@@ -13,6 +15,31 @@ export function AppShell({ children, requireAuth = false }: { children: ReactNod
       navigate({ to: "/login" });
     }
   }, [requireAuth, user, navigate]);
+
+  useEffect(() => {
+    if (!user) {
+      disconnectSocket();
+      return;
+    }
+
+    reconnectSocketWithToken(localStorage.getItem("token"));
+    const s = getSocket();
+
+    const onOutbid = (p: any) => {
+      const auctionId = p?.auctionId ? String(p.auctionId) : "";
+      const newBid = p?.newBid;
+      toast.error(
+        `You were outbid${auctionId ? ` on ${auctionId}` : ""}${
+          typeof newBid === "number" ? `. New bid: ${newBid}` : ""
+        }`,
+      );
+    };
+
+    s.on("outbid", onOutbid);
+    return () => {
+      s.off("outbid", onOutbid);
+    };
+  }, [user?.id]);
 
   if (requireAuth && !user) return null;
 

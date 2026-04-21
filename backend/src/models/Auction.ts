@@ -45,7 +45,7 @@ const auctionSchema = new Schema(
     },
     status: {
       type: String,
-      enum: ["active", "processing", "sold", "expired"],
+      enum: ["active", "processing", "sold", "expired", "cancelled"],
       required: true,
       default: "active",
     },

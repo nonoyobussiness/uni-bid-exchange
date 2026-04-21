@@ -19,7 +19,7 @@ export function UnicoinAmount({
   className,
   size = "md",
 }: {
-  amount: number;
+  amount: number | null | undefined;
   className?: string;
   size?: "sm" | "md" | "lg" | "xl";
 }) {
@@ -30,10 +30,11 @@ export function UnicoinAmount({
     xl: { wrap: "text-3xl gap-2.5", icon: "h-7 w-7" },
   } as const;
   const s = sizes[size];
+  const safeAmount = typeof amount === "number" && Number.isFinite(amount) ? amount : 0;
   return (
     <span className={cn("inline-flex items-center font-semibold tracking-tight", s.wrap, className)}>
       <UnicoinIcon className={s.icon} />
-      <span>{amount.toLocaleString()}</span>
+      <span>{safeAmount.toLocaleString()}</span>
     </span>
   );
 }

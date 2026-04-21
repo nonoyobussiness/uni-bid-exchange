@@ -101,4 +101,42 @@ router.patch(
   },
 );
 
+router.delete(
+  "/:id",
+  authGuard,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auctionId = z.string().parse(req.params.id);
+      const result = await AuctionService.deleteAuction(auctionId, req.user!._id.toString());
+
+      res.status(200).json({
+        success: true,
+        message: result.message,
+        data: result.deletedAuction,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  "/:id/cancel",
+  authGuard,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auctionId = z.string().parse(req.params.id);
+      const data = await AuctionService.cancelAuction(auctionId, req.user!._id.toString());
+
+      res.status(200).json({
+        success: true,
+        message: "Auction cancelled successfully",
+        data,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 export default router;

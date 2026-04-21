@@ -16,7 +16,7 @@ const schema = z.object({
     .trim()
     .email("Invalid email")
     .regex(/@mahindrauniversity\.edu\.in$/, "Use your university email"),
-  password: z.string().min(6, "Password must be at least 6 characters"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
 });
 type Values = z.infer<typeof schema>;
 

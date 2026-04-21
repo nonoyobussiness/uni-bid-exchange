@@ -12,10 +12,9 @@ import {
   LogOut,
   Menu,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
-import { useStore } from "@/lib/hooks";
 import { getWallet } from "@/lib/api";
 import { UnicoinAmount } from "./unicoin";
 import { Button } from "@/components/ui/button";
@@ -27,6 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { Wallet } from "@/lib/types";
 
 const NAV = [
   { to: "/", label: "Home", icon: Home },
@@ -42,7 +42,25 @@ export function AppHeader() {
   const loc = useLocation();
   const [open, setOpen] = useState(false);
 
-  const wallet = useStore(() => (user ? getWallet(user.id) : null));
+  const [wallet, setWallet] = useState<Wallet | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setWallet(null);
+      return;
+    }
+    getWallet()
+      .then((d) => {
+        if (!cancelled) setWallet(d.wallet);
+      })
+      .catch(() => {
+        if (!cancelled) setWallet(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-xl">

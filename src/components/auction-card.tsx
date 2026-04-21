@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { Gavel, Clock, Users, TrendingUp } from "lucide-react";
+import { Gavel, Clock, Users, TrendingUp, Trash2, X } from "lucide-react";
 import type { Auction } from "@/lib/types";
 import { Countdown } from "./countdown";
 import { UnicoinAmount } from "./unicoin";
@@ -11,10 +11,21 @@ interface Props {
   auction: Auction;
   onBid?: (a: Auction) => void;
   preview?: boolean;
+  currentUserId?: string;
+  onDelete?: (auctionId: string) => void;
+  onCancel?: (auctionId: string) => void;
 }
 
-export function AuctionCard({ auction, onBid, preview = false }: Props) {
+export function AuctionCard({ auction, onBid, preview = false, currentUserId, onDelete, onCancel }: Props) {
   const ended = auction.status !== "active" || auction.endsAt <= Date.now();
+  const isSeller = currentUserId && auction.sellerId === currentUserId;
+  const canDelete = isSeller && auction.bidCount === 0;
+  const canCancel = isSeller && auction.bidCount > 0 && auction.status === "active";
+  
+  // Log auction image info for debugging
+  if (auction.images.length > 0) {
+    console.log(`[AuctionCard] Rendering auction ${auction.id} with image: ${auction.images[0].substring(0, 100)}...`);
+  }
 
   return (
     <article
@@ -25,7 +36,7 @@ export function AuctionCard({ auction, onBid, preview = false }: Props) {
     >
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
         <img
-          src={auction.images[0]}
+          src={auction.images[0] || "https://via.placeholder.com/800x600?text=No+Image"}
           alt={auction.title}
           loading="lazy"
           className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
@@ -41,10 +52,47 @@ export function AuctionCard({ auction, onBid, preview = false }: Props) {
             <Badge className="bg-foreground text-background text-base">SOLD</Badge>
           </div>
         )}
+        {auction.status === "cancelled" && (
+          <div className="absolute inset-0 flex items-center justify-center bg-background/70 backdrop-blur-sm">
+            <Badge className="bg-foreground text-background text-base">CANCELLED</Badge>
+          </div>
+        )}
         {auction.status === "active" && !ended && (
           <div className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-background/90 px-2.5 py-1 backdrop-blur">
             <Clock className="h-3 w-3 text-primary" />
             <Countdown endsAt={auction.endsAt} compact />
+          </div>
+        )}
+        {(canDelete || canCancel) && (
+          <div className="absolute top-2 right-14 flex gap-1.5">
+            {canDelete && (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-8 w-8 p-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete?.(auction.id);
+                }}
+                title="Delete auction"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
+            {canCancel && (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-8 w-8 p-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCancel?.(auction.id);
+                }}
+                title="Cancel auction"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -67,7 +115,7 @@ export function AuctionCard({ auction, onBid, preview = false }: Props) {
           </div>
         </div>
 
-        {!preview && (
+        {!preview && !isSeller && (
           <Button
             disabled={ended}
             onClick={() => onBid?.(auction)}
@@ -84,6 +132,15 @@ export function AuctionCard({ auction, onBid, preview = false }: Props) {
             )}
           </Button>
         )}
+        {!preview && isSeller && (
+          <div className="text-xs text-center text-muted-foreground">
+            {auction.status === "active" && !ended ? (
+              <span>You're selling this</span>
+            ) : (
+              <span className="capitalize">{auction.status}</span>
+            )}
+          </div>
+        )}
       </div>
 
       {preview && (
@@ -92,7 +149,7 @@ export function AuctionCard({ auction, onBid, preview = false }: Props) {
         </div>
       )}
 
-      {!preview && (
+      {!preview && !isSeller && (
         <Link
           to="/"
           aria-label={auction.title}

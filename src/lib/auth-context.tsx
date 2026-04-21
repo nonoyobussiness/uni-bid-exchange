@@ -1,11 +1,12 @@
-import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
-import { getCurrentUser, getSession, initMockBackend, login as apiLogin, logout as apiLogout, register as apiRegister } from "./api";
+import { createContext, useContext, useEffect, useMemo, useState, useCallback, type ReactNode } from "react";
+import { ApiError, authMe, getToken, login as apiLogin, logout as apiLogout, register as apiRegister } from "./api";
 import type { User } from "./types";
-import { eventBus } from "./events";
+import { reconnectSocketWithToken } from "./socket";
 
 interface AuthContextValue {
   user: User | null;
   isAuthenticated: boolean;
+  loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (input: {
     fullName: string;
@@ -21,37 +22,69 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
 
   const refresh = useCallback(() => {
-    setUser(getCurrentUser());
+    const token = getToken();
+    if (!token) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    authMe()
+      .then((me) => setUser(me))
+      .catch((e: unknown) => {
+        const err = e as ApiError;
+        // Token expired/invalid -> api() already cleared token + emitted auth:logout
+        if (err && typeof err === "object" && "status" in err && (err as any).status === 401) {
+          setUser(null);
+          return;
+        }
+        // Any other failure keeps user logged out but doesn't hard-crash the app shell
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    initMockBackend();
     refresh();
-    const unsub = eventBus.subscribe(refresh);
+    const onLogout = () => {
+      setUser(null);
+      setLoading(false);
+    };
+    window.addEventListener("auth:logout", onLogout);
     return () => {
-      unsub();
+      window.removeEventListener("auth:logout", onLogout);
     };
   }, [refresh]);
 
-  const value: AuthContextValue = {
-    user,
-    isAuthenticated: !!getSession(),
-    login: async (email, password) => {
-      await apiLogin(email, password);
-      refresh();
-    },
-    register: async (input) => {
-      await apiRegister(input);
-      refresh();
-    },
-    logout: () => {
-      apiLogout();
-      refresh();
-    },
-    refresh,
-  };
+  const isAuthenticated = useMemo(() => !!getToken() && !!user, [user]);
+
+  const value: AuthContextValue = useMemo(
+    () => ({
+      user,
+      isAuthenticated,
+      loading,
+      login: async (email, password) => {
+        const me = await apiLogin(email, password);
+        reconnectSocketWithToken(getToken());
+        setUser(me);
+      },
+      register: async (input) => {
+        const me = await apiRegister(input);
+        reconnectSocketWithToken(getToken());
+        setUser(me);
+      },
+      logout: () => {
+        apiLogout();
+        reconnectSocketWithToken(null);
+        setUser(null);
+      },
+      refresh,
+    }),
+    [user, isAuthenticated, loading, refresh],
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

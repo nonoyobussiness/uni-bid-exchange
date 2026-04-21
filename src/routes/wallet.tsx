@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowDownToLine, ArrowUpToLine, Loader2, ShieldCheck } from "lucide-react";
 import { format } from "date-fns";
 import { toast } from "sonner";
@@ -16,10 +16,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth-context";
-import { useStore } from "@/lib/hooks";
-import { buyUnicoins, getWallet, listTransactions, withdrawUnicoins } from "@/lib/api";
+import { buyUnicoins, getWallet, withdrawUnicoins } from "@/lib/api";
 import { UnicoinAmount } from "@/components/unicoin";
 import { cn } from "@/lib/utils";
+import type { Transaction, Wallet } from "@/lib/types";
 
 const PACKS = [
   { coins: 100, rs: 100 },
@@ -34,19 +34,42 @@ export const Route = createFileRoute("/wallet")({
 
 function WalletPage() {
   const { user } = useAuth();
-  const wallet = useStore(() => (user ? getWallet(user.id) : null));
-  const txs = useStore(() => (user ? listTransactions(user.id) : []));
+  const [wallet, setWallet] = useState<Wallet | null>(null);
+  const [txs, setTxs] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(false);
   const [withdraw, setWithdraw] = useState("");
   const [busy, setBusy] = useState(false);
 
-  if (!user || !wallet) return <AppShell requireAuth>{null}</AppShell>;
+  const refresh = async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const data = await getWallet();
+      setWallet(data.wallet);
+      setTxs(data.transactions);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to load wallet");
+      setWallet(null);
+      setTxs([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  if (!user) return <AppShell requireAuth>{null}</AppShell>;
+  if (loading && !wallet) return <AppShell requireAuth>{null}</AppShell>;
+  if (!wallet) return <AppShell requireAuth>{null}</AppShell>;
 
   const buy = async (amount: number) => {
     setBusy(true);
     try {
-      // Simulate Stripe checkout latency
-      await new Promise((r) => setTimeout(r, 600));
-      await buyUnicoins(user.id, amount);
+      await buyUnicoins(amount);
+      await refresh();
       toast.success(`Added ${amount} Unicoins to your wallet`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");
@@ -60,7 +83,8 @@ function WalletPage() {
     if (!n || n <= 0) return;
     setBusy(true);
     try {
-      await withdrawUnicoins(user.id, n);
+      await withdrawUnicoins(n);
+      await refresh();
       toast.success(`Withdrew ${n} Unicoins`);
       setWithdraw("");
     } catch (e) {

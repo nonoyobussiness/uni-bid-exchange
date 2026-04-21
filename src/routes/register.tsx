@@ -22,7 +22,7 @@ const schema = z
         /^[A-Za-z0-9]+@mahindrauniversity\.edu\.in$/,
         "Must be studentid@mahindrauniversity.edu.in",
       ),
-    password: z.string().min(6, "At least 6 characters"),
+    password: z.string().min(8, "At least 8 characters"),
     confirm: z.string(),
   })
   .refine((d) => d.password === d.confirm, {
@@ -34,7 +34,7 @@ type Values = z.infer<typeof schema>;
 
 function strength(pwd: string) {
   let s = 0;
-  if (pwd.length >= 6) s++;
+  if (pwd.length >= 8) s++;
   if (pwd.length >= 10) s++;
   if (/[A-Z]/.test(pwd) && /[a-z]/.test(pwd)) s++;
   if (/\d/.test(pwd)) s++;

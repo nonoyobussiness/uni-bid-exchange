@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import { Trophy, TrendingDown, XCircle, Activity, ShoppingBag, Clock4, Ban } from "lucide-react";
 import { formatDistanceToNowStrict } from "date-fns";
 import { AppShell } from "@/components/app-shell";
@@ -14,10 +14,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAuth } from "@/lib/auth-context";
-import { useStore } from "@/lib/hooks";
-import { listAuctions, listMyBids, listMyListings } from "@/lib/api";
+import { getAuction, getMyBids, getMyListings } from "@/lib/api";
 import { UnicoinAmount } from "@/components/unicoin";
-import type { Auction } from "@/lib/types";
+import type { Auction, Bid } from "@/lib/types";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/history")({
   component: HistoryPage,
@@ -25,16 +25,76 @@ export const Route = createFileRoute("/history")({
 
 function HistoryPage() {
   const { user } = useAuth();
-  useStore(listAuctions); // reactivity
+  const [loading, setLoading] = useState(false);
+  const [myBids, setMyBids] = useState<Array<{ auction: Auction; topBid: Bid; myTop: Bid }>>([]);
+  const [myListings, setMyListings] = useState<Auction[]>([]);
 
-  const myBids = useMemo(
-    () => (user ? listMyBids(user.id) : []),
-    [user],
-  );
-  const myListings = useMemo(
-    () => (user ? listMyListings(user.id) : []),
-    [user],
-  );
+  useEffect(() => {
+    if (!user) return;
+    let alive = true;
+    setLoading(true);
+    Promise.all([getMyBids(), getMyListings()])
+      .then(async ([bids, listings]) => {
+        if (!alive) return;
+        setMyListings(listings);
+
+        const allBids = [
+          ...(bids?.activeBids ?? []),
+          ...(bids?.pastBids ?? []),
+        ] as Array<{ auctionId: any; amount: number; createdAt: string | number }>;
+
+        const byAuction = new Map<string, typeof allBids>();
+        allBids.forEach((b) => {
+          const aid = String(b.auctionId?._id ?? b.auctionId);
+          if (!aid) return;
+          const arr = byAuction.get(aid) ?? [];
+          arr.push(b);
+          byAuction.set(aid, arr);
+        });
+
+        const rows = await Promise.all(
+          Array.from(byAuction.entries()).slice(0, 50).map(async ([auctionId, bidsForAuction]) => {
+            const { auction, bids } = await getAuction(auctionId);
+            const top = bids[0];
+            const myTop = [...bidsForAuction].sort((a, b) => b.amount - a.amount)[0];
+            return {
+              auction,
+              topBid: top ?? {
+                id: "unknown",
+                auctionId,
+                userId: "",
+                userName: "—",
+                amount: auction.currentBid,
+                createdAt: auction.createdAt,
+              },
+              myTop: {
+                id: "me",
+                auctionId,
+                userId: user.id,
+                userName: user.fullName,
+                amount: myTop.amount,
+                createdAt: typeof myTop.createdAt === "string" ? Date.parse(myTop.createdAt) : myTop.createdAt,
+              },
+            };
+          }),
+        );
+        if (!alive) return;
+        setMyBids(rows);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        toast.error(e instanceof Error ? e.message : "Failed to load activity");
+        setMyBids([]);
+        setMyListings([]);
+      })
+      .finally(() => {
+        if (!alive) return;
+        setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [user]);
 
   if (!user) return <AppShell requireAuth>{null}</AppShell>;
 
@@ -66,6 +126,12 @@ function HistoryPage() {
           <h1 className="text-3xl font-bold tracking-tight">Your activity</h1>
           <p className="mt-1 text-muted-foreground">Track your bids and listings.</p>
         </header>
+
+        {loading && (
+          <div className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-muted-foreground shadow-card">
+            Loading your activity…
+          </div>
+        )}
 
         <Tabs defaultValue="bids">
           <TabsList>
@@ -140,7 +206,7 @@ function BidsTable({
   rows,
   userId,
 }: {
-  rows: ReturnType<typeof listMyBids>;
+  rows: Array<{ auction: Auction; topBid: Bid; myTop: Bid }>;
   userId: string;
 }) {
   if (rows.length === 0) return <Empty msg="Nothing here yet." />;

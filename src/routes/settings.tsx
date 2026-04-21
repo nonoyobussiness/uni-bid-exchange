@@ -6,9 +6,9 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/lib/auth-context";
 import { useTheme } from "@/lib/theme-context";
-import { useStore } from "@/lib/hooks";
 import { getPrefs, setPrefs } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 import {
   Select,
   SelectContent,
@@ -39,13 +39,46 @@ const NOTIF_FIELDS: { key: keyof NotificationPrefs; title: string; desc: string 
 function SettingsPage() {
   const { user } = useAuth();
   const { theme, setTheme } = useTheme();
-  const prefs = useStore(() => (user ? getPrefs(user.id) : null));
+  const [prefs, setLocalPrefs] = useState<NotificationPrefs | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  if (!user || !prefs) return <AppShell requireAuth>{null}</AppShell>;
+  useEffect(() => {
+    if (!user) return;
+    let alive = true;
+    setLoading(true);
+    getPrefs(user.id)
+      .then((p) => {
+        if (!alive) return;
+        setLocalPrefs(p);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        toast.error(e instanceof Error ? e.message : "Failed to load settings");
+        setLocalPrefs(null);
+      })
+      .finally(() => {
+        if (!alive) return;
+        setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [user]);
 
-  const update = (patch: Partial<NotificationPrefs>) => {
-    setPrefs(user.id, { ...prefs, ...patch });
-    toast.success("Saved");
+  if (!user) return <AppShell requireAuth>{null}</AppShell>;
+  if (loading && !prefs) return <AppShell requireAuth>{null}</AppShell>;
+  if (!prefs) return <AppShell requireAuth>{null}</AppShell>;
+
+  const update = async (patch: Partial<NotificationPrefs>) => {
+    const next = { ...prefs, ...patch };
+    setLocalPrefs(next);
+    try {
+      await setPrefs(user.id, next);
+      toast.success("Saved");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save");
+      setLocalPrefs(prefs);
+    }
   };
 
   return (

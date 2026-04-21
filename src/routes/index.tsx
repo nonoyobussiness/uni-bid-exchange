@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Search, Sparkles, TrendingUp, Clock, ShoppingBag, Gavel, ArrowRight } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { AuctionCard } from "@/components/auction-card";
@@ -7,10 +7,10 @@ import { BidModal } from "@/components/bid-modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { useStore } from "@/lib/hooks";
 import { listAuctions } from "@/lib/api";
-import type { Category } from "@/lib/types";
+import type { Auction, Category } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { Loader2, AlertCircle } from "lucide-react";
 
 const CATEGORIES: (Category | "All")[] = [
   "All",
@@ -27,7 +27,9 @@ export const Route = createFileRoute("/")({
 });
 
 function HomePage() {
-  const auctions = useStore(listAuctions);
+  const [auctions, setAuctions] = useState<Auction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [bidId, setBidId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -49,6 +51,35 @@ function HomePage() {
       return matchCat && matchQ;
     });
   }, [auctions, q, cat]);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError(null);
+    listAuctions({
+      category: cat === "All" ? undefined : cat,
+      q: q || undefined,
+      sort: "endingSoon",
+      limit: 100,
+      page: 1,
+    })
+      .then((items) => {
+        if (!alive) return;
+        setAuctions(items);
+      })
+      .catch((e: unknown) => {
+        if (!alive) return;
+        setError(e instanceof Error ? e.message : "Failed to load auctions");
+        setAuctions([]);
+      })
+      .finally(() => {
+        if (!alive) return;
+        setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [cat, q]);
 
   const active = filtered.filter((a) => a.status === "active");
   const liveBids = [...active].sort((a, b) => a.endsAt - b.endsAt).slice(0, 8);
@@ -175,6 +206,20 @@ function HomePage() {
 
       {/* Sections */}
       <div className="mx-auto max-w-7xl space-y-12 px-4 py-10 md:px-6">
+        {loading && (
+          <div className="flex items-center justify-center gap-2 rounded-2xl border border-border bg-card p-10 text-sm text-muted-foreground shadow-card">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading auctions…
+          </div>
+        )}
+        {!loading && error && (
+          <div className="flex items-start gap-3 rounded-2xl border border-destructive/30 bg-destructive/5 p-6 text-sm text-destructive shadow-card">
+            <AlertCircle className="mt-0.5 h-4 w-4" />
+            <div>
+              <div className="font-medium">Could not load auctions</div>
+              <div className="mt-1 text-destructive/80">{error}</div>
+            </div>
+          </div>
+        )}
         {liveBids.length > 0 && (
           <Section
             icon={<Clock className="h-5 w-5 text-destructive" />}
@@ -212,7 +257,7 @@ function HomePage() {
           />
         )}
 
-        {filtered.length === 0 && (
+        {!loading && !error && filtered.length === 0 && (
           <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center">
             <Search className="mx-auto h-10 w-10 text-muted-foreground" />
             <h3 className="mt-3 text-lg font-semibold">No auctions match your search</h3>
@@ -247,7 +292,7 @@ function Section({
   icon: React.ReactNode;
   title: string;
   subtitle: string;
-  items: ReturnType<typeof listAuctions>;
+  items: Auction[];
   onBid: (id: string) => void;
 }) {
   return (

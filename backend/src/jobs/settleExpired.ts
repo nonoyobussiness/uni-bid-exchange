@@ -20,7 +20,7 @@ async function settleAuction(auctionId: Types.ObjectId): Promise<void> {
     _id: auctionId,
     status: "processing",
   }).lean();
-
+  
   if (!processingAuction) {
     console.log(`[Settlement:SKIP] Auction ${auctionId.toString()} no longer in processing state`);
     return;
