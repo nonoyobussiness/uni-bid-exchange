@@ -4,7 +4,11 @@ let socket: Socket | null = null;
 
 const baseUrl = () => {
   const raw = import.meta.env.VITE_API_URL as string | undefined;
-  if (!raw) return "";
+  if (!raw) {
+    // Match api.ts dev fallback so sockets work out of the box.
+    if (import.meta.env.DEV) return "http://localhost:5000";
+    return "";
+  }
   return raw.replace(/\/+$/, "");
 };
 

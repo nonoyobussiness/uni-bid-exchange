@@ -21,7 +21,12 @@ export class ApiError extends Error {
 
 const apiBaseUrl = () => {
   const raw = import.meta.env.VITE_API_URL as string | undefined;
-  if (!raw) return "";
+  if (!raw) {
+    // Dev convenience: if env isn't set, assume local backend.
+    // Without this, requests hit the frontend dev server and return HTML 404 pages.
+    if (import.meta.env.DEV) return "http://localhost:5000";
+    return "";
+  }
   return raw.replace(/\/+$/, "");
 };
 
@@ -47,6 +52,11 @@ function toMessage(payload: unknown, fallback: string) {
     if (typeof m === "string" && m.trim()) return m;
   }
   return fallback;
+}
+
+function looksLikeHtml(s: string): boolean {
+  const t = s.trimStart().toLowerCase();
+  return t.startsWith("<!doctype html") || t.startsWith("<html");
 }
 
 async function parseJsonSafely(res: Response): Promise<unknown> {
@@ -81,6 +91,13 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
       if (typeof window !== "undefined") {
         window.dispatchEvent(new Event("auth:logout"));
       }
+    }
+    if (typeof payload === "string" && looksLikeHtml(payload)) {
+      throw new ApiError(
+        "Unexpected HTML response (likely wrong API URL). Set VITE_API_URL to your backend (e.g. http://localhost:5000) and restart the dev server.",
+        res.status,
+        payload,
+      );
     }
     const msg =
       res.status === 413

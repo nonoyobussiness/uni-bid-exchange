@@ -9,10 +9,12 @@ import { AppError } from "../utils/errors";
 import { getIO } from "../sockets";
 
 type SortOption = "endingSoon" | "priceLowToHigh" | "priceHighToLow";
+type StatusOption = "active" | "processing" | "sold" | "expired" | "cancelled";
 
 export type ListAuctionsInput = {
   category?: string;
   q?: string;
+  status?: StatusOption;
   sort?: SortOption;
   page: number;
   limit: number;
@@ -55,11 +57,17 @@ const ensureFutureDate = (endsAt: Date): void => {
 };
 
 export class AuctionService {
-  static async listActiveAuctions(input: ListAuctionsInput) {
-    const filter: FilterQuery<AuctionDocument> = {
-      status: "active",
-      endsAt: { $gt: new Date() },
-    };
+  static async listAuctions(input: ListAuctionsInput) {
+    const filter: FilterQuery<AuctionDocument> = {};
+
+    // Default behavior: return all auctions (any status, any end time).
+    // If the caller explicitly asks for active, apply the "not ended yet" constraint.
+    if (input.status) {
+      filter.status = input.status;
+      if (input.status === "active") {
+        filter.endsAt = { $gt: new Date() };
+      }
+    }
 
     if (input.category) {
       filter.category = input.category;

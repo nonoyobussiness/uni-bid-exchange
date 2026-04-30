@@ -9,6 +9,7 @@ const router = Router();
 const listAuctionsQuerySchema = z.object({
   category: z.string().trim().min(1).optional(),
   q: z.string().trim().min(1).optional(),
+  status: z.enum(["active", "processing", "sold", "expired", "cancelled"]).optional(),
   sort: z.enum(["endingSoon", "priceLowToHigh", "priceHighToLow"]).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),
@@ -35,7 +36,7 @@ const updateAuctionSchema = z
 router.get("/", async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const query = listAuctionsQuerySchema.parse(req.query);
-    const data = await AuctionService.listActiveAuctions(query);
+    const data = await AuctionService.listAuctions(query);
 
     res.status(200).json({
       success: true,
