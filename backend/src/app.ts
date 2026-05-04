@@ -2,6 +2,7 @@ import cors from "cors";
 import express, { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 
+import { env } from "./config/env";
 import authRoutes from "./routes/auth";
 import auctionsRoutes from "./routes/auctions";
 import bidsRoutes from "./routes/bids";
@@ -11,7 +12,18 @@ import { AppError } from "./utils/errors";
 
 const app = express();
 
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow tools like Postman and same-origin server calls.
+      if (!origin || env.corsOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+  }),
+);
 // Allow base64 image payloads from the frontend (Sell page uses data URLs).
 app.use(express.json({ limit: "15mb" }));
 

@@ -7,6 +7,7 @@ const envSchema = z.object({
   MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
   JWT_SECRET: z.string().min(1, "JWT_SECRET is required"),
   REDIS_URL: z.string().optional(),
+  CORS_ORIGINS: z.string().optional(),
   PORT: z
     .string()
     .optional()
@@ -25,4 +26,16 @@ if (!parsedEnv.success) {
   throw new Error(`Invalid environment configuration: ${issues}`);
 }
 
-export const env = parsedEnv.data;
+const parseOrigins = (value: string | undefined): string[] => {
+  if (!value) return ["http://localhost:5173", "http://localhost:3000"];
+
+  return value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+};
+
+export const env = {
+  ...parsedEnv.data,
+  corsOrigins: parseOrigins(parsedEnv.data.CORS_ORIGINS),
+};

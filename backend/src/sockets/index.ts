@@ -25,7 +25,7 @@ export function getIO(): Server {
 export function initializeSocketIO(httpServer: http.Server): Server {
   io = new Server(httpServer, {
     cors: {
-      origin: "*",
+      origin: env.corsOrigins,
       methods: ["GET", "POST"],
     },
   });
