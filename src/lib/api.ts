@@ -3,6 +3,7 @@ import type { Auction, Bid, NotificationPrefs, Review, Transaction, User, Wallet
 // Centralized JWT storage key (matches requirement)
 const TOKEN_KEY = "token";
 const UI_PREFS_KEY = "ua_prefs_ui";
+const API_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, "");
 
 type ApiEnvelope<T> =
   | { success: true; data: T; message?: string }
@@ -20,14 +21,13 @@ export class ApiError extends Error {
 }
 
 const apiBaseUrl = () => {
-  const raw = import.meta.env.VITE_API_URL as string | undefined;
-  if (!raw) {
-    // Dev convenience: if env isn't set, assume local backend.
-    // Without this, requests hit the frontend dev server and return HTML 404 pages.
-    if (import.meta.env.DEV) return "http://localhost:5000";
-    return "";
+  if (!API_BASE_URL) {
+    throw new ApiError(
+      "Missing VITE_API_URL. Set it to your backend URL (for example: https://your-backend.up.railway.app).",
+      500,
+    );
   }
-  return raw.replace(/\/+$/, "");
+  return API_BASE_URL;
 };
 
 export function getToken() {
@@ -94,7 +94,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     }
     if (typeof payload === "string" && looksLikeHtml(payload)) {
       throw new ApiError(
-        "Unexpected HTML response (likely wrong API URL). Set VITE_API_URL to your backend (e.g. http://localhost:5000) and restart the dev server.",
+        "Unexpected HTML response (likely wrong API URL). Set VITE_API_URL to your backend (for example: https://your-backend.up.railway.app) and restart the dev server.",
         res.status,
         payload,
       );

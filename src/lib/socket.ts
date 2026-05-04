@@ -1,15 +1,15 @@
 import { io, type Socket } from "socket.io-client";
 
 let socket: Socket | null = null;
+const SOCKET_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, "");
 
 const baseUrl = () => {
-  const raw = import.meta.env.VITE_API_URL as string | undefined;
-  if (!raw) {
-    // Match api.ts dev fallback so sockets work out of the box.
-    if (import.meta.env.DEV) return "http://localhost:5000";
-    return "";
+  if (!SOCKET_BASE_URL) {
+    throw new Error(
+      "Missing VITE_API_URL. Set it to your backend URL (for example: https://your-backend.up.railway.app).",
+    );
   }
-  return raw.replace(/\/+$/, "");
+  return SOCKET_BASE_URL;
 };
 
 export function getSocket() {
